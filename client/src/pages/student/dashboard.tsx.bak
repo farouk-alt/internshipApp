@@ -1,0 +1,1631 @@
+import { useEffect, useState, useRef, useMemo } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth";
+import { Student } from "@shared/schema";
+import { apiRequest, queryClient, getQueryFn } from "@/lib/queryClient";
+
+// Composant pour le logo Intega
+const IntegaLogo = () => (
+  <div className="relative mr-2">
+    <svg width="28" height="28" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" className="logo-shadow">
+      {/* Cercle extérieur avec dégradé */}
+      <circle cx="100" cy="100" r="90" fill="url(#logoGradient)" />
+      
+      {/* Forme intérieure - "I" */}
+      <path d="M100 40 L100 160" stroke="white" strokeWidth="20" strokeLinecap="round" />
+      
+      {/* Arc pour le "n" */}
+      <path d="M60 100 C60 60, 100 60, 100 100" stroke="white" strokeWidth="15" strokeLinecap="round" fill="none" />
+      
+      {/* Arc pour le "t" */}
+      <path d="M140 80 L140 140 C140 160, 120 160, 100 160" stroke="white" strokeWidth="15" strokeLinecap="round" fill="none" />
+      
+      {/* La barre du t */}
+      <path d="M120 100 L160 100" stroke="white" strokeWidth="15" strokeLinecap="round" />
+      
+      {/* Point lumineux */}
+      <circle cx="150" cy="60" r="15" fill="white" fillOpacity="0.8" />
+      
+      {/* Définition du dégradé */}
+      <defs>
+        <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stopColor="#0061ff" />
+          <stop offset="100%" stopColor="#60efff" />
+        </linearGradient>
+      </defs>
+    </svg>
+    
+    {/* Effet lumineux */}
+    <div className="absolute -inset-1 bg-blue-500 opacity-30 blur-lg rounded-full animate-pulse"></div>
+  </div>
+);
+
+// Données de test (à remplacer par des données réelles)
+const mockInternships = [
+  {
+    id: 1,
+    title: "Développeur Frontend",
+    company: "TechSolutions",
+    location: "Paris",
+    status: "En attente",
+    date: "Il y a 2 jours"
+  },
+  {
+    id: 2, 
+    title: "UX/UI Designer",
+    company: "DesignStudio",
+    location: "Lyon",
+    status: "Refusé",
+    date: "Il y a 5 jours"
+  },
+  {
+    id: 3,
+    title: "Ingénieur Data",
+    company: "DataTech",
+    location: "Marseille",
+    status: "Entretien",
+    date: "Il y a 1 jour"
+  }
+];
+
+const mockDocuments = [
+  {
+    id: 1,
+    name: "CV_2025.pdf",
+    type: "CV",
+    uploaded: "24 Avril 2025"
+  },
+  {
+    id: 2,
+    name: "Lettre_Motivation.docx",
+    type: "Lettre de motivation",
+    uploaded: "22 Avril 2025"
+  },
+  {
+    id: 3,
+    name: "Portfolio_Design.pdf",
+    type: "Portfolio",
+    uploaded: "20 Avril 2025"
+  }
+];
+
+const mockNotifications = [
+  {
+    id: 1,
+    title: "Nouvelle offre disponible",
+    description: "Une offre correspondant à votre profil vient d'être publiée",
+    time: "Il y a 1 heure",
+    read: false
+  },
+  {
+    id: 2,
+    title: "Entretien confirmé",
+    description: "Votre entretien avec DataTech a été confirmé pour le 29 avril",
+    time: "Il y a 3 heures",
+    read: false
+  },
+  {
+    id: 3,
+    title: "Document validé",
+    description: "Votre CV a été validé par votre école",
+    time: "Hier",
+    read: true
+  }
+];
+
+// Les stages recommandés sont maintenant récupérés depuis l'API
+
+export default function StudentDashboard() {
+  const { user, logoutMutation } = useAuth();
+  const [activeTab, setActiveTab] = useState("overview");
+  const [unreadCount, setUnreadCount] = useState(2);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  
+  // État pour les notifications de clic
+  const [showAlert, setShowAlert] = useState(false);
+  const [alertMessage, setAlertMessage] = useState("");
+  const [lastClicked, setLastClicked] = useState<string | null>(null);
+  
+  // États pour le filtrage et la recherche
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFilter, setSelectedFilter] = useState("all");
+  // Récupérer les informations du profil étudiant
+  const { data: profile, isLoading: profileLoading, error: profileError, refetch: refetchProfile } = useQuery<Student>({
+    queryKey: ['/api/profile/student'],
+    enabled: !!user && user?.userType === 'STUDENT',
+    retry: 1,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+
+  // Récupérer la liste des stages disponibles
+  const { data: availableInternships = [], isLoading: internshipsLoading, refetch: refetchInternships } = useQuery<any[]>({
+    queryKey: ['/api/internships'],
+    queryFn: getQueryFn({ on401: "returnNull" }),
+    staleTime: 0, // Désactiver le cache pour toujours avoir les données fraîches
+    refetchOnWindowFocus: true, // Rafraîchir les données quand l'utilisateur revient sur la page
+  });
+  
+  // État pour les stages recommandés (filtrés par la recherche)
+  const [filteredInternships, setFilteredInternships] = useState<any[]>([]);
+  
+  // Transformer les données des stages pour l'affichage
+  const processedInternships = useMemo(() => {
+    if (!availableInternships || availableInternships.length === 0) return [];
+    
+    console.log("Données brutes des stages:", availableInternships);
+    
+    return availableInternships.map((internship: any) => {
+      // Calculer un pourcentage de correspondance factice basé sur l'ID de l'étudiant et du stage
+      const matchPercentage = ((internship.id * 13 + (profile?.id || 0)) % 30) + 70;
+      
+      // Formater la date de publication
+      const createdDate = new Date(internship.createdAt);
+      const now = new Date();
+      const diffTime = Math.abs(now.getTime() - createdDate.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      let dateText = "";
+      if (diffDays === 0) {
+        dateText = "Publié aujourd'hui";
+      } else if (diffDays === 1) {
+        dateText = "Publié hier";
+      } else {
+        dateText = `Publié il y a ${diffDays} jours`;
+      }
+      
+      return {
+        id: internship.id,
+        title: internship.title,
+        company: `Entreprise #${internship.companyId}`,
+        location: internship.location,
+        date: dateText,
+        match: matchPercentage,
+        // Ajout de propriétés supplémentaires qui pourraient être utiles
+        description: internship.description,
+        duration: internship.duration,
+        companyId: internship.companyId,
+        skills: internship.skills || []
+      };
+    });
+  }, [availableInternships, profile]);
+  
+  // Initialiser l'état des stages filtrés avec tous les stages disponibles
+  useEffect(() => {
+    if (processedInternships && processedInternships.length > 0) {
+      console.log("Stages disponibles mis à jour:", processedInternships);
+      setFilteredInternships(processedInternships);
+    }
+  }, [processedInternships]);
+  
+  // Référence pour l'input de fichier caché
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // États pour gérer les formulaires modaux
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showDocumentModal, setShowDocumentModal] = useState(false);
+  const [showApplicationModal, setShowApplicationModal] = useState(false);
+  
+  // Gestion des notifications
+  const markNotificationsAsRead = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("PATCH", "/api/notifications/mark-read", {});
+    },
+    onSuccess: () => {
+      setUnreadCount(0);
+      handleButtonClick('Notifications marquées comme lues');
+      // Invalider le cache pour recharger les notifications
+      queryClient.invalidateQueries({ queryKey: ['/api/notifications'] });
+    },
+    onError: (error) => {
+      handleButtonClick('Erreur: ' + error.message);
+    }
+  });
+  
+  // Téléchargement de document
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const response = await fetch('/api/documents/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      if (response.ok) {
+        handleButtonClick(`Document ${file.name} téléchargé avec succès`);
+        // Recharger les documents
+        queryClient.invalidateQueries({ queryKey: ['/api/documents/student'] });
+      } else {
+        const errorData = await response.json();
+        handleButtonClick(`Erreur: ${errorData.message || 'Échec du téléchargement'}`);
+      }
+    } catch (error) {
+      handleButtonClick(`Erreur: Problème de connexion`);
+    }
+  };
+  
+  // Supprimer un document
+  const deleteDocument = useMutation({
+    mutationFn: async (documentId: number) => {
+      return await apiRequest("DELETE", `/api/documents/${documentId}`, {});
+    },
+    onSuccess: () => {
+      handleButtonClick('Document supprimé avec succès');
+      // Invalider le cache pour recharger les documents
+      queryClient.invalidateQueries({ queryKey: ['/api/documents/student'] });
+    },
+    onError: (error) => {
+      handleButtonClick('Erreur: ' + error.message);
+    }
+  });
+  
+  // État pour stocker l'ID du stage actuellement sélectionné pour postuler
+  const [selectedInternshipId, setSelectedInternshipId] = useState<number | null>(null);
+  // État pour stocker le fichier CV sélectionné
+  const [selectedCvFile, setSelectedCvFile] = useState<File | null>(null);
+  // Référence pour l'input de fichier CV
+  const cvFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fonction pour gérer la sélection du CV
+  const handleCvFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setSelectedCvFile(file);
+    }
+  };
+
+  // Fonction pour ouvrir le sélecteur de fichier CV
+  const openCvFileSelector = () => {
+    cvFileInputRef.current?.click();
+  };
+
+  // Fonction pour ouvrir la boîte de dialogue de candidature
+  const openApplicationModal = (internshipId: number) => {
+    setSelectedInternshipId(internshipId);
+    setSelectedCvFile(null);
+    setShowApplicationModal(true);
+  };
+
+  // Postuler à un stage
+  const applyToInternship = useMutation({
+    mutationFn: async () => {
+      // Vérifier que le profil étudiant est chargé et qu'un stage est sélectionné
+      if (!profile || !profile.id || !selectedInternshipId) {
+        throw new Error("Informations manquantes. Veuillez réessayer.");
+      }
+      
+      // Créer un FormData pour l'envoi du fichier
+      const formData = new FormData();
+      formData.append('internshipId', selectedInternshipId.toString());
+      formData.append('coverLetter', ''); // Optionnel, pourrait être ajouté plus tard
+      
+      // Ajouter le CV s'il a été sélectionné
+      if (selectedCvFile) {
+        formData.append('cv', selectedCvFile);
+      }
+      
+      // Effectuer la requête avec FormData
+      const response = await fetch('/api/applications', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include'
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Erreur lors de l\'envoi de la candidature');
+      }
+      
+      return await response.json();
+    },
+    onSuccess: () => {
+      handleButtonClick('Candidature envoyée avec succès');
+      setShowApplicationModal(false);
+      setSelectedInternshipId(null);
+      setSelectedCvFile(null);
+      // Invalider le cache pour recharger les candidatures
+      queryClient.invalidateQueries({ queryKey: ['/api/applications/student'] });
+    },
+    onError: (error) => {
+      handleButtonClick('Erreur: ' + error.message);
+    }
+  });
+  
+  // Mettre à jour le profil
+  const updateProfile = useMutation({
+    mutationFn: async (profileData: Partial<Student>) => {
+      return await apiRequest("PATCH", "/api/profile/student", profileData);
+    },
+    onSuccess: () => {
+      handleButtonClick('Profil mis à jour avec succès');
+      setShowProfileModal(false);
+      // Invalider le cache pour recharger le profil
+      queryClient.invalidateQueries({ queryKey: ['/api/profile/student'] });
+    },
+    onError: (error) => {
+      handleButtonClick('Erreur: ' + error.message);
+    }
+  });
+
+  // Récupérer les candidatures de l'étudiant
+  const { data: applications, isLoading: applicationsLoading } = useQuery<any[]>({
+    queryKey: ['/api/applications/student'],
+    enabled: !!user && !!profile,
+    retry: 1,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+
+  // Récupérer les documents de l'étudiant
+  const { data: documents, isLoading: documentsLoading } = useQuery<any[]>({
+    queryKey: ['/api/documents/student'],
+    enabled: !!user && !!profile,
+    retry: 1,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+  
+  // Récupération de l'historique des stages
+  const { data: internshipHistoryData, isLoading: historyLoading } = useQuery<any>({
+    queryKey: [profile?.id ? `/api/internship-history/student/${profile.id}` : null],
+    enabled: !!profile?.id,
+    retry: 1,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+
+  console.log("User:", user);
+  console.log("Student profile:", profile);
+  
+  // Utiliser useEffect pour tenter de récupérer le profil s'il n'est pas chargé
+  useEffect(() => {
+    if (user && !profile && !profileLoading && (profileError || !profileError)) {
+      refetchProfile();
+    }
+  }, [user, profile, profileLoading, profileError, refetchProfile]);
+
+  // Combiner les données d'utilisateur et de profil étudiant
+  const studentProfile = {
+    name: profile ? `${profile.firstName} ${profile.lastName}` : (user ? user.username : 'Étudiant'),
+    avatar: profile?.avatar || null,
+    school: profile?.schoolId ? `École #${profile.schoolId}` : 'Non spécifiée',
+    program: profile?.program || 'Non spécifié',
+    applications: 0, // À remplacer par le nombre réel de candidatures
+    completedProfile: profile ? 80 : 30, // Calculer en fonction des champs remplis
+    graduationYear: profile?.graduationYear || 'Non spécifié'
+  };
+  
+  // Fonction pour afficher un message d'alerte lors des clics
+  const handleButtonClick = (itemName: string) => {
+    console.log(`Bouton cliqué: ${itemName}`);
+    
+    // Plutôt que d'utiliser une alerte, mettre à jour l'état pour afficher le texte
+    setLastClicked(itemName);
+    
+    // Effacer après 3 secondes
+    setTimeout(() => {
+      setLastClicked(null);
+    }, 3000);
+  };
+
+  useEffect(() => {
+    // Définir le titre de la page
+    document.title = "Tableau de bord étudiant - Intega";
+  }, []);
+
+  return (
+    <React.Fragment>
+      <div className="min-h-screen bg-gray-50 flex">
+        {/* Sidebar */}
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
+            <h2 className="text-xl font-bold mb-4">Postuler à ce stage</h2>
+            
+            <div className="mb-4">
+              <p className="text-sm text-gray-600 mb-2">
+                Ajouter votre CV à votre candidature augmente significativement vos chances d'être retenu.
+              </p>
+              
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center mb-2">
+                {selectedCvFile ? (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <span className="text-blue-600 mr-2">📄</span>
+                      <span className="text-sm font-medium text-gray-900 truncate" style={{ maxWidth: '200px' }}>
+                        {selectedCvFile.name}
+                      </span>
+                    </div>
+                    <button 
+                      className="text-red-500 hover:text-red-700"
+                      onClick={() => setSelectedCvFile(null)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-gray-500 mb-2">Aucun CV sélectionné</p>
+                    <button 
+                      className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                      onClick={openCvFileSelector}
+                    >
+                      Sélectionner un CV
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              <p className="text-xs text-gray-500">
+                Formats acceptés: PDF, DOC, DOCX
+              </p>
+            </div>
+            
+            <div className="flex justify-end space-x-2 mt-4">
+              <button 
+                className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-100"
+                onClick={() => {
+                  setShowApplicationModal(false);
+                  setSelectedInternshipId(null);
+                  setSelectedCvFile(null);
+                }}
+              >
+                Annuler
+              </button>
+              <button 
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-blue-300"
+                onClick={() => applyToInternship.mutate()}
+                disabled={applyToInternship.isPending}
+              >
+                {applyToInternship.isPending ? 'Envoi en cours...' : 'Postuler'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Affichage du dernier élément cliqué - notification centrale et très visible */}
+      {lastClicked && (
+        <div className="notification-popup">
+          {lastClicked}
+        </div>
+      )}
+      
+      {/* Overlay pour la sidebar mobile */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-30 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      
+      {/* Sidebar - Desktop and Mobile avec Toggle */}
+      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-md transform transition-transform duration-300 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex flex-col h-full overflow-hidden">
+          <div className="p-4 border-b flex-shrink-0">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <IntegaLogo />
+                <h1 className="text-xl font-bold text-gray-900">Intega</h1>
+              </div>
+              <button 
+                className="lg:hidden p-2 rounded-md text-gray-600 hover:bg-gray-100"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex-grow overflow-y-auto" style={{ maxHeight: "calc(100vh - 140px)" }}>
+            <div className="p-4">
+              <div className="flex items-center mb-6">
+                <div className="h-10 w-10 mr-3 rounded-full bg-blue-600 flex items-center justify-center text-white">
+                  {studentProfile.name.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                </div>
+                <div>
+                  <p className="font-medium text-gray-900 truncate max-w-[140px]">{studentProfile.name}</p>
+                  <p className="text-sm text-gray-500">Étudiant</p>
+                </div>
+              </div>
+              
+              <nav className="space-y-1">
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'overview' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('overview');
+                    handleButtonClick('Vue d\'ensemble');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">📊</span>
+                  Vue d'ensemble
+                </button>
+                
+                <button 
+                  type="button" 
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'applications' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('applications');
+                    handleButtonClick('Mes candidatures');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">💼</span>
+                  Mes candidatures
+                </button>
+                
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'search' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('search');
+                    handleButtonClick('Recherche stages');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">🔍</span>
+                  Recherche stages
+                </button>
+                
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'documents' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('documents');
+                    handleButtonClick('Documents');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">📄</span>
+                  Documents
+                </button>
+
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'history' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('history');
+                    handleButtonClick('Historique des stages');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">📅</span>
+                  Historique des stages
+                </button>
+                
+                <div className="relative">
+                  <button 
+                    type="button"
+                    className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'notifications' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                    onClick={() => {
+                      setActiveTab('notifications');
+                      handleButtonClick('Notifications');
+                    }}
+                  >
+                    <span className="h-5 w-5 mr-3">🔔</span>
+                    Notifications
+                    {unreadCount > 0 && (
+                      <div className="ml-auto bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                        {unreadCount}
+                      </div>
+                    )}
+                  </button>
+                </div>
+                
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'profile' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('profile');
+                    handleButtonClick('Mon profil');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">👤</span>
+                  Mon profil
+                </button>
+                
+                <button 
+                  type="button"
+                  className={`inline-flex items-center justify-start w-full px-4 py-2 text-sm font-medium transition-colors rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${activeTab === 'settings' ? 'bg-blue-50 text-blue-600' : 'text-gray-700 hover:bg-accent hover:text-accent-foreground'}`}
+                  onClick={() => {
+                    setActiveTab('settings');
+                    handleButtonClick('Paramètres');
+                  }}
+                >
+                  <span className="h-5 w-5 mr-3">⚙️</span>
+                  Paramètres
+                </button>
+              </nav>
+            </div>
+          </div>
+          
+          <div className="mt-auto p-4 border-t">
+            <button 
+              className="w-full justify-start text-gray-700 hover:text-red-600 hover:bg-red-50 px-4 py-2 text-sm font-medium rounded-md flex items-center"
+              onClick={() => {
+                handleButtonClick('Déconnexion');
+                logoutMutation.mutate();
+              }}
+            >
+              <span className="h-5 w-5 mr-3">🚪</span>
+              Déconnexion
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      {/* Main content */}
+      <div className="flex-1 lg:pl-64">
+        {/* En-tête mobile avec bouton menu */}
+        <div className="bg-white shadow-sm p-4 flex items-center justify-between sticky top-0 z-40">
+          <div className="flex items-center">
+            <button
+              type="button"
+              className="inline-flex items-center justify-center h-9 w-9 rounded-md mr-2 text-sm font-medium transition-colors bg-transparent hover:bg-accent hover:text-accent-foreground lg:hidden"
+              onClick={() => setSidebarOpen(true)}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <IntegaLogo />
+            <h1 className="text-xl font-bold text-gray-900">Intega</h1>
+          </div>
+          <div className="flex items-center space-x-3">
+            <button 
+              type="button"
+              className="inline-flex items-center justify-center h-10 w-10 rounded-md text-sm font-medium transition-colors bg-transparent hover:bg-accent hover:text-accent-foreground relative"
+              onClick={() => {
+                setActiveTab('notifications');
+                handleButtonClick('Notifications');
+              }}
+            >
+              <span className="h-5 w-5">🔔</span>
+              {unreadCount > 0 && (
+                <div className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center">
+                  {unreadCount}
+                </div>
+              )}
+            </button>
+            <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm">
+              {studentProfile.name.split(' ').map(n => n[0]).join('').substring(0, 2)}
+            </div>
+          </div>
+        </div>
+        
+        <main className="p-4 lg:p-8">
+          {/* Vue d'ensemble */}
+          {activeTab === "overview" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h1 className="text-2xl font-bold text-gray-900">Vue d'ensemble</h1>
+                <div className="flex items-center">
+                  <p className="text-sm text-gray-500 mr-2">Aujourd'hui: {new Date().toLocaleDateString()}</p>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white p-6 rounded-lg shadow">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-500">Candidatures</p>
+                      <h3 className="text-2xl font-bold text-gray-900">3</h3>
+                    </div>
+                    <div className="h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                      💼
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white p-6 rounded-lg shadow">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-500">Entretiens</p>
+                      <h3 className="text-2xl font-bold text-gray-900">1</h3>
+                    </div>
+                    <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center text-green-600">
+                      📅
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white p-6 rounded-lg shadow">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-500">Documents</p>
+                      <h3 className="text-2xl font-bold text-gray-900">3</h3>
+                    </div>
+                    <div className="h-10 w-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
+                      📄
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white p-6 rounded-lg shadow">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-500">Profil</p>
+                      <h3 className="text-2xl font-bold text-gray-900">{studentProfile.completedProfile}%</h3>
+                    </div>
+                    <div className="h-10 w-10 rounded-full bg-purple-100 flex items-center justify-center text-purple-600">
+                      👤
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-blue-600 h-2 rounded-full" style={{ width: `${studentProfile.completedProfile}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2">
+                  <div className="bg-white rounded-lg shadow">
+                    <div className="p-6 border-b flex justify-between items-center">
+                      <div>
+                        <h2 className="text-lg font-semibold text-gray-900">Opportunités de stage</h2>
+                        <p className="text-sm text-gray-500">Basé sur votre profil et vos centres d'intérêt</p>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          refetchInternships();
+                          handleButtonClick('Actualisation des offres de stage...');
+                        }} 
+                        className="p-2 rounded-full hover:bg-gray-100"
+                        title="Actualiser les offres de stage"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                      </button>
+                    </div>
+                    <div className="divide-y divide-gray-200">
+                      {internshipsLoading ? (
+                        <div className="flex justify-center items-center h-20 py-8">
+                          <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-blue-500"></div>
+                        </div>
+                      ) : filteredInternships.length === 0 ? (
+                        <div className="text-center py-8 text-gray-500">
+                          <p>Aucun stage disponible pour le moment.</p>
+                        </div>
+                      ) : (
+                        filteredInternships.map((internship) => (
+                          <div key={internship.id} className="p-6 hover:bg-gray-50 cursor-pointer" onClick={() => handleButtonClick(`${internship.title} chez ${internship.company}`)}>
+                            <div className="flex justify-between">
+                              <div>
+                                <h3 className="font-medium text-gray-900">{internship.title}</h3>
+                                <p className="text-sm text-gray-600">{internship.company} - {internship.location}</p>
+                                <p className="text-xs text-gray-500 mt-1">{internship.date}</p>
+                              </div>
+                              <div className="flex items-start">
+                                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                  {internship.match}% compatible
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="p-4 border-t">
+                      <button 
+                        className="w-full text-blue-600 font-medium text-sm hover:text-blue-800"
+                        onClick={() => {
+                          handleButtonClick('Voir toutes les opportunités de stage');
+                          setActiveTab('search'); // Change l'onglet actif pour afficher la recherche de stages
+                        }}
+                      >
+                        Voir tout
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <div className="bg-white rounded-lg shadow mb-6">
+                    <div className="p-6 border-b">
+                      <div className="flex items-center justify-between">
+                        <h2 className="text-lg font-semibold text-gray-900">Notifications</h2>
+                        {unreadCount > 0 && (
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
+                            {unreadCount} nouvelles
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="divide-y divide-gray-200">
+                      {mockNotifications.map((notification) => (
+                        <div 
+                          key={notification.id}
+                          className={`p-4 hover:bg-gray-50 cursor-pointer ${!notification.read ? 'bg-blue-50' : ''}`}
+                          onClick={() => handleButtonClick(notification.title)}
+                        >
+                          <div className="flex items-start">
+                            <div className="flex-shrink-0 mr-3">
+                              <div className={`h-8 w-8 rounded-full flex items-center justify-center ${!notification.read ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>
+                                🔔
+                              </div>
+                            </div>
+                            <div>
+                              <p className={`text-sm font-medium ${!notification.read ? 'text-gray-900' : 'text-gray-700'}`}>
+                                {notification.title}
+                              </p>
+                              <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-4 border-t">
+                      <button 
+                        className="w-full text-blue-600 font-medium text-sm hover:text-blue-800"
+                        onClick={() => handleButtonClick('Voir toutes les notifications')}
+                      >
+                        Voir tout
+                      </button>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white rounded-lg shadow">
+                    <div className="p-6 border-b">
+                      <h2 className="text-lg font-semibold text-gray-900">Documents récents</h2>
+                    </div>
+                    <div className="divide-y divide-gray-200">
+                      {mockDocuments.map((document) => (
+                        <div key={document.id} className="px-6 py-4">
+                          <div className="flex justify-between items-center">
+                            <div>
+                              <p className="text-sm font-medium text-gray-900">{document.name}</p>
+                              <p className="text-xs text-gray-500">{document.uploaded}</p>
+                            </div>
+                            <button 
+                              className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                              onClick={() => handleButtonClick(`Voir ${document.name}`)}
+                            >
+                              Voir
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-4 border-t">
+                      <button 
+                        className="w-full text-blue-600 font-medium text-sm hover:text-blue-800"
+                        onClick={() => handleButtonClick('Gérer mes documents')}
+                      >
+                        Gérer mes documents
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-6 border-b">
+                  <h2 className="text-lg font-semibold text-gray-900">Mes candidatures</h2>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Entreprise</th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Localisation</th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Statut</th>
+                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th scope="col" className="relative px-6 py-3">
+                          <span className="sr-only">Actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {mockInternships.map((internship) => (
+                        <tr key={internship.id} className="hover:bg-gray-50">
+                          <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{internship.title}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{internship.company}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{internship.location}</td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full 
+                              ${internship.status === 'En attente' ? 'bg-yellow-100 text-yellow-800' : 
+                                internship.status === 'Refusé' ? 'bg-red-100 text-red-800' : 
+                                'bg-green-100 text-green-800'}`
+                            }>
+                              {internship.status}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{internship.date}</td>
+                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                            <button 
+                              className="text-blue-600 hover:text-blue-900"
+                              onClick={() => handleButtonClick(`Détails de la candidature pour ${internship.title}`)}
+                            >
+                              Détails
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="p-4 border-t">
+                  <button 
+                    className="w-full text-blue-600 font-medium text-sm hover:text-blue-800"
+                    onClick={() => handleButtonClick('Voir toutes mes candidatures')}
+                  >
+                    Voir tout
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {/* Autres onglets que vous pouvez implémenter */}
+          {activeTab === "applications" && (
+            <div>
+              <div className="flex justify-between items-center mb-6">
+                <h1 className="text-2xl font-bold text-gray-900">Mes candidatures</h1>
+                <button 
+                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  onClick={() => {
+                    handleButtonClick('Postuler à une nouvelle offre');
+                    setActiveTab('search');
+                  }}
+                >
+                  Postuler à une nouvelle offre
+                </button>
+              </div>
+              
+              {/* État de chargement pour les candidatures */}
+              {applicationsLoading ? (
+                <div className="bg-white rounded-lg shadow p-8">
+                  <div className="flex justify-center">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-white rounded-lg shadow">
+                  <div className="p-4 border-b">
+                    <div className="flex justify-between items-center">
+                      <h2 className="text-lg font-medium">Candidatures en cours</h2>
+                      <div className="flex space-x-2">
+                        <button 
+                          className={`px-3 py-1 text-sm rounded-md ${selectedFilter === 'all' ? 'bg-blue-600 text-white' : 'border hover:bg-gray-50'}`}
+                          onClick={() => setSelectedFilter('all')}
+                        >
+                          Toutes
+                        </button>
+                        <button 
+                          className={`px-3 py-1 text-sm rounded-md ${selectedFilter === 'pending' ? 'bg-blue-600 text-white' : 'border hover:bg-gray-50'}`}
+                          onClick={() => setSelectedFilter('pending')}
+                        >
+                          En attente
+                        </button>
+                        <button 
+                          className={`px-3 py-1 text-sm rounded-md ${selectedFilter === 'interview' ? 'bg-blue-600 text-white' : 'border hover:bg-gray-50'}`}
+                          onClick={() => setSelectedFilter('interview')}
+                        >
+                          Entretiens
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Liste des candidatures */}
+                  <div className="divide-y divide-gray-200">
+                    {/* Utiliser mockInternships */}
+                    {mockInternships.map((internship) => (
+                      <div key={internship.id} className="p-4 hover:bg-gray-50">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-medium text-lg">{internship.title}</h3>
+                            <p className="text-gray-600">{internship.company} • {internship.location}</p>
+                            <p className="text-sm text-gray-500 mt-1">Postulé {internship.date}</p>
+                          </div>
+                          <div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                              internship.status === "En attente" ? "bg-yellow-100 text-yellow-800" :
+                              internship.status === "Refusé" ? "bg-red-100 text-red-800" :
+                              "bg-green-100 text-green-800"
+                            }`}>
+                              {internship.status}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex justify-end space-x-2">
+                          <button
+                            className="px-3 py-1 border rounded-md text-sm hover:bg-gray-50"
+                            onClick={() => handleButtonClick(`Voir détails pour ${internship.title}`)}
+                          >
+                            Voir détails
+                          </button>
+                          <button
+                            className="px-3 py-1 border rounded-md text-sm hover:bg-gray-50"
+                            onClick={() => handleButtonClick(`Contacter ${internship.company}`)}
+                          >
+                            Contacter
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          
+          {activeTab === "search" && (
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 mb-6">Recherche de stages</h1>
+              
+              {/* Barre de recherche et filtres */}
+              <div className="bg-white rounded-lg shadow p-6 mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="col-span-2">
+                    <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">Mots clés</label>
+                    <input 
+                      id="search"
+                      type="text" 
+                      placeholder="Titre, entreprise, compétences..."
+                      className="w-full p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white" 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="filter" className="block text-sm font-medium text-gray-700 mb-1">Filtrer par</label>
+                    <select
+                      id="filter"
+                      className="w-full p-2 border border-gray-300 rounded-md bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      value={selectedFilter}
+                      onChange={(e) => setSelectedFilter(e.target.value)}
+                    >
+                      <option value="all" className="text-gray-900">Tous les stages</option>
+                      <option value="new" className="text-gray-900">Nouveaux stages</option>
+                      <option value="tech" className="text-gray-900">Technologie</option>
+                      <option value="business" className="text-gray-900">Business</option>
+                      <option value="design" className="text-gray-900">Design</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <button
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                    onClick={() => {
+                      // Afficher le message de recherche en cours
+                      handleButtonClick('Recherche en cours...');
+                      
+                      // Simulation d'une recherche (normalement, cela serait une requête API)
+                      setTimeout(() => {
+                        // Après la "recherche", mettre à jour les résultats et afficher un message de confirmation
+                        const filteredResults = selectedFilter === 'all' ? processedInternships :
+                          processedInternships.filter(internship => 
+                            internship.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                            internship.company.toLowerCase().includes(searchQuery.toLowerCase())
+                          );
+                          
+                        setFilteredInternships(filteredResults);
+                        
+                        handleButtonClick(`${filteredResults.length} résultats trouvés pour "${searchQuery || 'tous les stages'}"`);
+                      }, 500);
+                    }}
+                  >
+                    Rechercher
+                  </button>
+                </div>
+              </div>
+              
+              {/* Résultats de recherche */}
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-4 border-b">
+                  <h2 className="text-lg font-medium">Opportunités recommandées</h2>
+                </div>
+                
+                <div className="divide-y divide-gray-200">
+                  {internshipsLoading ? (
+                    <div className="flex justify-center items-center h-20 py-8">
+                      <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-blue-500"></div>
+                    </div>
+                  ) : filteredInternships.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <p>Aucun stage disponible pour le moment.</p>
+                    </div>
+                  ) : (
+                    filteredInternships.map((internship) => (
+                    <div key={internship.id} className="p-4 hover:bg-gray-50">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="font-medium text-lg">{internship.title}</h3>
+                          <p className="text-gray-600">{internship.company} • {internship.location}</p>
+                          <p className="text-sm text-gray-500 mt-1">{internship.date}</p>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <div className="bg-blue-100 text-blue-800 px-2 py-1 rounded-full text-xs mb-2">
+                            {internship.match}% de correspondance
+                          </div>
+                          <button
+                            className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                            onClick={() => {
+                              handleButtonClick(`Postuler à ${internship.title} chez ${internship.company}`);
+                              // Ouvrir la boîte de dialogue pour sélectionner un CV et postuler
+                              openApplicationModal(internship.id);
+                            }}
+                          >
+                            Postuler
+                          </button>
+                        </div>
+                      </div>
+                      
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs">JavaScript</span>
+                        <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs">React</span>
+                        <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs">Node.js</span>
+                      </div>
+                    </div>
+                  ))
+                  )}
+                </div>
+                
+                {/* Pagination */}
+                <div className="p-4 border-t flex justify-between items-center">
+                  <p className="text-sm text-gray-500">Affichage de 3 stages sur 42</p>
+                  <div className="flex space-x-2">
+                    <button className="px-3 py-1 border rounded-md text-sm text-gray-700 hover:bg-gray-50">Précédent</button>
+                    <button className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm">1</button>
+                    <button className="px-3 py-1 border rounded-md text-sm text-gray-700 hover:bg-gray-50">2</button>
+                    <button className="px-3 py-1 border rounded-md text-sm text-gray-700 hover:bg-gray-50">3</button>
+                    <button className="px-3 py-1 border rounded-md text-sm text-gray-700 hover:bg-gray-50">Suivant</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {activeTab === "documents" && (
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 mb-6">Mes documents</h1>
+              <div className="bg-white rounded-lg shadow p-6">
+                <p className="mb-4">Vos documents importants sont listés ci-dessous :</p>
+                
+                {/* État de chargement pour les documents */}
+                {documentsLoading ? (
+                  <div className="flex justify-center p-8">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Afficher les documents réels s'ils existent */}
+                    {documents && documents.length > 0 ? (
+                      documents.map((doc) => (
+                        <div key={doc.id} className="flex items-center justify-between p-3 border rounded-md">
+                          <div>
+                            <p className="font-medium">{doc.name}</p>
+                            <p className="text-sm text-gray-500">{doc.type || 'Document'} • {new Date(doc.createdAt).toLocaleDateString()}</p>
+                          </div>
+                          <div>
+                            <button 
+                              className="text-blue-600 hover:text-blue-800 mr-3"
+                              onClick={() => {
+                                window.open(`/api/documents/${doc.id}/download`, '_blank');
+                                handleButtonClick(`Téléchargement de ${doc.name}`);
+                              }}
+                            >
+                              Télécharger
+                            </button>
+                            <button 
+                              className="text-red-600 hover:text-red-800"
+                              onClick={() => deleteDocument.mutate(doc.id)}
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      // Utiliser des exemples de documents mockés si aucun document n'existe encore
+                      mockDocuments.map((doc) => (
+                        <div key={doc.id} className="flex items-center justify-between p-3 border rounded-md">
+                          <div>
+                            <p className="font-medium">{doc.name}</p>
+                            <p className="text-sm text-gray-500">{doc.type} • {doc.uploaded}</p>
+                          </div>
+                          <div>
+                            <button 
+                              className="text-blue-600 hover:text-blue-800 mr-3"
+                              onClick={() => handleButtonClick(`Démonstration: Télécharger ${doc.name}`)}
+                            >
+                              Télécharger
+                            </button>
+                            <button 
+                              className="text-red-600 hover:text-red-800"
+                              onClick={() => handleButtonClick(`Démonstration: Supprimer ${doc.name}`)}
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+                
+                <button 
+                  className="mt-6 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  onClick={() => {
+                    handleButtonClick('Ajouter un document');
+                    // Déclenche le dialogue de sélection de fichier
+                    fileInputRef.current?.click();
+                  }}
+                >
+                  Ajouter un document
+                </button>
+              </div>
+            </div>
+          )}
+          
+          {/* Historique des stages */}
+          {activeTab === "history" && (
+            <div className="space-y-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <h1 className="text-2xl font-bold text-gray-900">Historique de mes stages</h1>
+                <div className="relative w-full sm:w-64">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4">🔍</span>
+                  <input 
+                    placeholder="Rechercher un stage..." 
+                    className="pl-10 w-full h-10 px-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    onChange={(e) => {
+                      // Future search implementation
+                      console.log("Search term:", e.target.value);
+                    }}
+                  />
+                </div>
+              </div>
+              
+              <div className="bg-white rounded-lg shadow">
+                <div className="p-6 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div className="flex gap-2 border rounded-md overflow-hidden">
+                    <button
+                      className="px-4 py-2 text-sm font-medium bg-blue-50 text-blue-600"
+                      onClick={() => console.log("Tous les stages")}
+                    >
+                      Tous
+                    </button>
+                    <button
+                      className="px-4 py-2 text-sm font-medium hover:bg-gray-50"
+                      onClick={() => console.log("Stages validés")}
+                    >
+                      Validés
+                    </button>
+                    <button
+                      className="px-4 py-2 text-sm font-medium hover:bg-gray-50"
+                      onClick={() => console.log("Stages en attente")}
+                    >
+                      En attente
+                    </button>
+                  </div>
+                  
+                  <div className="flex items-center">
+                    <select 
+                      className="w-full sm:w-[180px] h-10 px-3 rounded-md border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      defaultValue="recent"
+                    >
+                      <option value="recent">Plus récents</option>
+                      <option value="oldest">Plus anciens</option>
+                      <option value="rating">Évaluation</option>
+                    </select>
+                  </div>
+                </div>
+                
+                <div className="p-6">
+                  {!historyLoading && internshipHistoryData?.histories?.length ? (
+                    <div className="space-y-4">
+                      {internshipHistoryData.histories.map((history: any) => (
+                        <div key={history.id} className="border rounded-lg p-4 hover:bg-gray-50 transition-colors">
+                          <div className="flex flex-col md:flex-row justify-between">
+                            <div className="flex items-start space-x-4">
+                              <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center text-blue-600">
+                                🏢
+                              </div>
+                              <div>
+                                <h3 className="font-medium text-lg mb-1">{history.title}</h3>
+                                <div className="flex flex-wrap gap-2 mb-2">
+                                  <span className={`px-2 py-1 text-xs font-medium rounded-full ${history.validated ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}`}>
+                                    {history.validated ? "Validé" : "En attente de validation"}
+                                  </span>
+                                  {history.rating && (
+                                    <span className="px-2 py-1 text-xs font-medium rounded-full bg-amber-100 text-amber-800">
+                                      {Array(history.rating).fill('★').join('')} {history.rating}/5
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-sm text-gray-500">
+                                  <p>Entreprise: {history.companyName || `Entreprise #${history.companyId}`}</p>
+                                  <p>Période: {new Date(history.startDate).toLocaleDateString()} au {new Date(history.endDate).toLocaleDateString()}</p>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center mt-4 md:mt-0 space-x-2">
+                              <button 
+                                className="px-3 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                                onClick={() => {
+                                  console.log("Détails du stage:", history.id);
+                                  alert(history.description || "Aucune description disponible pour ce stage.");
+                                }}
+                              >
+                                Détails
+                              </button>
+                              {!history.feedback ? (
+                                <button 
+                                  className="px-3 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                                  onClick={() => {
+                                    console.log("Ajouter un feedback pour:", history.id);
+                                    alert("La fonctionnalité d'ajout de feedback sera disponible prochainement.");
+                                  }}
+                                >
+                                  Ajouter feedback
+                                </button>
+                              ) : (
+                                <button 
+                                  className="px-3 py-1 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
+                                  onClick={() => {
+                                    console.log("Voir le feedback pour:", history.id);
+                                    alert(history.feedback);
+                                  }}
+                                >
+                                  Voir feedback
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : !historyLoading ? (
+                    <div className="text-center py-12">
+                      <div className="h-16 w-16 mx-auto text-gray-300 mb-4">📅</div>
+                      <h3 className="text-lg font-medium text-gray-900 mb-2">Aucun historique de stage</h3>
+                      <p className="text-gray-500 max-w-md mx-auto mb-6">
+                        Vous n'avez pas encore d'historique de stages terminés. Les stages terminés apparaîtront ici une fois qu'ils seront ajoutés.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex justify-center items-center py-12">
+                      <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {activeTab === "notifications" && (
+            <div>
+              <div className="flex justify-between items-center mb-6">
+                <h1 className="text-2xl font-bold text-gray-900">Notifications</h1>
+                {unreadCount > 0 && (
+                  <button
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                    onClick={() => markNotificationsAsRead.mutate()}
+                    disabled={markNotificationsAsRead.isPending}
+                  >
+                    {markNotificationsAsRead.isPending ? (
+                      <span className="flex items-center">
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></span>
+                        Traitement...
+                      </span>
+                    ) : (
+                      "Tout marquer comme lu"
+                    )}
+                  </button>
+                )}
+              </div>
+              
+              <div className="bg-white rounded-lg shadow overflow-hidden">
+                {/* Afficher un indicateur de chargement si besoin */}
+                {markNotificationsAsRead.isPending ? (
+                  <div className="flex justify-center items-center p-8">
+                    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-200">
+                    {mockNotifications.map((notification) => (
+                      <div 
+                        key={notification.id} 
+                        className={`p-4 hover:bg-gray-50 ${!notification.read ? 'bg-blue-50' : ''}`}
+                        onClick={() => handleButtonClick(`Notification: ${notification.title}`)}
+                      >
+                        <div className="flex items-start">
+                          <div className="flex-shrink-0 mr-3">
+                            <div className={`h-10 w-10 rounded-full flex items-center justify-center ${!notification.read ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-600'}`}>
+                              🔔
+                            </div>
+                          </div>
+                          <div>
+                            <p className={`text-sm font-medium ${!notification.read ? 'text-gray-900' : 'text-gray-700'}`}>
+                              {notification.title}
+                            </p>
+                            <p className="text-sm text-gray-500">{notification.description}</p>
+                            <p className="text-xs text-gray-500 mt-1">{notification.time}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {/* Message si aucune notification n'est disponible */}
+                {mockNotifications.length === 0 && (
+                  <div className="p-8 text-center">
+                    <div className="mb-3 text-gray-400 text-4xl">🔔</div>
+                    <p className="text-gray-500">Vous n'avez aucune notification pour le moment.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          
+          {activeTab === "profile" && (
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 mb-6">Mon profil</h1>
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex justify-between items-center mb-6">
+                  <div className="flex items-center">
+                    <div className="h-16 w-16 bg-blue-600 rounded-full flex items-center justify-center text-white text-lg mr-4">
+                      {studentProfile.name.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-bold">{studentProfile.name}</h2>
+                      <p className="text-gray-600">{studentProfile.program}</p>
+                    </div>
+                  </div>
+                  <button 
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    onClick={() => handleButtonClick('Modifier mon profil')}
+                  >
+                    Modifier mon profil
+                  </button>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <h3 className="text-lg font-medium mb-4">Informations personnelles</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm text-gray-500">École</p>
+                        <p>{studentProfile.school}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Programme</p>
+                        <p>{studentProfile.program}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Année d'obtention</p>
+                        <p>{studentProfile.graduationYear}</p>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <h3 className="text-lg font-medium mb-4">Informations de contact</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-sm text-gray-500">Email</p>
+                        <p>{user?.email}</p>
+                      </div>
+                      <div>
+                        <p className="text-sm text-gray-500">Téléphone</p>
+                        <p>Non renseigné</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="mt-6">
+                  <h3 className="text-lg font-medium mb-4">Complétion du profil</h3>
+                  <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+                    <div className="bg-blue-600 h-2 rounded-full" style={{ width: `${studentProfile.completedProfile}%` }}></div>
+                  </div>
+                  <p className="text-sm text-gray-600">Votre profil est complété à {studentProfile.completedProfile}%</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          {activeTab === "settings" && (
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900 mb-6">Paramètres</h1>
+              <div className="bg-white rounded-lg shadow p-6">
+                <p>Contenu de l'onglet Paramètres serait affiché ici.</p>
+                <button 
+                  className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  onClick={() => handleButtonClick('Sauvegarder les paramètres')}
+                >
+                  Sauvegarder
+                </button>
+              </div>
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+    
+    {/* Inputs cachés pour les uploads de fichiers */}
+    <input
+      type="file"
+      className="hidden"
+      ref={fileInputRef}
+      onChange={handleFileUpload}
+    />
+    <input
+      type="file"
+      className="hidden"
+      ref={cvFileInputRef}
+      onChange={handleCvFileChange}
+      accept=".pdf,.doc,.docx"
+    />
+
+    {/* Boîte de dialogue pour la candidature */}
+    {showApplicationModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-lg p-6 w-full max-w-md">
+          <h2 className="text-xl font-bold mb-4">Postuler à un stage</h2>
+          
+          <p className="mb-4">
+            Vous êtes sur le point de postuler à un stage.
+            {selectedInternshipId && (
+              <span> ID du stage : {selectedInternshipId}</span>
+            )}
+          </p>
+          
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              CV (optionnel)
+            </label>
+            <div className="flex items-center">
+              {selectedCvFile ? (
+                <div className="flex-1 truncate bg-gray-100 p-2 rounded-md">
+                  {selectedCvFile.name}
+                </div>
+              ) : (
+                <div className="flex-1 p-2 border border-dashed border-gray-300 rounded-md text-gray-500 text-center">
+                  Aucun CV sélectionné
+                </div>
+              )}
+              <button
+                type="button"
+                className="ml-2 bg-gray-200 text-gray-700 px-3 py-2 rounded-md hover:bg-gray-300"
+                onClick={openCvFileSelector}
+              >
+                Parcourir
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Formats acceptés : PDF, DOC, DOCX
+            </p>
+          </div>
+          
+          <div className="flex justify-end space-x-3 mt-6">
+            <button
+              type="button"
+              className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
+              onClick={() => {
+                setShowApplicationModal(false);
+                setSelectedInternshipId(null);
+                setSelectedCvFile(null);
+              }}
+            >
+              Annuler
+            </button>
+            <button
+              type="button"
+              className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              onClick={() => applyToInternship.mutate()}
+              disabled={applyToInternship.isPending}
+            >
+              {applyToInternship.isPending ? "Envoi en cours..." : "Envoyer ma candidature"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+  );
+}

@@ -1,0 +1,393 @@
+import { useState, useEffect, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/use-auth"; // Added for authentication
+import { useToast } from "@/hooks/use-toast"; // Added for user feedback
+import { DashboardLayout } from "@/components/layout/dashboard-layout";
+import { ApplicationStatusBadge } from "@/components/application/application-status-badge";
+import { ShareDocumentsDialog } from "@/components/application/share-documents-dialog";
+import { Card, CardContent } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { Building, MapPin, Calendar, Clock, FileText, ExternalLink, ClipboardList, Upload } from "lucide-react";
+import axios from "axios";
+
+// Status mapping
+const STATUS_MAPPING = {
+  all: "all",
+  pending: "pending",
+  accepted: "accepted",
+  interviewing: "interviewing",
+  rejected: "rejected",
+  reviewing: "reviewing",
+};
+
+// Display status in French
+const getStatusDisplay = (status) => {
+  switch (status) {
+    case "pending":
+      return "En attente";
+    case "accepted":
+      return "Acceptée";
+    case "interviewing":
+      return "Entretien";
+    case "rejected":
+      return "Refusée";
+    case "reviewing":
+      return "En révision";
+    default:
+      return status;
+  }
+};
+
+export default function StudentApplications() {
+  const { user } = useAuth(); // Get user data for authentication
+  const { toast } = useToast(); // For error notifications
+  const [activeTab, setActiveTab] = useState("all");
+  const [statusCounts, setStatusCounts] = useState({});
+  const [shareDocsOpen, setShareDocsOpen] = useState(false);
+  const [selectedApplication, setSelectedApplication] = useState(null);
+
+  // Configure axios with auth headers
+  const axiosInstance = axios.create({
+    baseURL: "http://localhost:8080",
+    headers: {
+      Authorization: user?.token ? `Bearer ${user.token}` : undefined,
+      "Content-Type": "application/json",
+    },
+  });
+
+  // Fetch applications
+  const {
+    data: applications,
+    isLoading: isLoadingApplications,
+    error: applicationsError,
+  } = useQuery({
+    queryKey: ["applications", user?.id],
+    queryFn: async () => {
+      if (!user?.id) {
+        throw new Error("User ID not available");
+      }
+      const response = await axiosInstance.get("/api/applications/student");
+      console.log("Fetched applications:", response.data);
+      return response.data || [];
+    },
+    enabled: !!user?.id, // Only run if user ID is available
+    staleTime: 0, // Always fetch fresh data
+    onError: (error) => {
+      console.error("Error fetching applications:", error);
+      toast({
+        title: "Erreur",
+        description: "Impossible de charger les candidatures. Veuillez réessayer.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Fetch internships
+  const {
+    data: internships,
+    isLoading: isLoadingInternships,
+    error: internshipsError,
+  } = useQuery({
+    queryKey: ["internships"],
+    queryFn: async () => {
+      const response = await axiosInstance.get("/api/internships");
+      console.log("Fetched internships:", response.data);
+      return response.data || [];
+    },
+    enabled: !!user?.id, // Only run if user is authenticated
+    staleTime: 0,
+    onError: (error) => {
+      console.error("Error fetching internships:", error);
+      toast({
+        title: "Erreur",
+        description: "Impossible de charger les offres de stage. Veuillez réessayer.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Loading state
+  const isLoading = isLoadingApplications || isLoadingInternships;
+
+  // Handle tab change
+  const handleTabChange = (value) => {
+    console.log("Switching tab to:", value);
+    setActiveTab(value);
+  };
+
+  // Filter applications
+  const filteredApplications = useMemo(() => {
+    if (!applications || !Array.isArray(applications)) {
+      console.log("No applications to filter");
+      return [];
+    }
+
+    console.log("Filtering applications for tab:", activeTab);
+    const filtered = applications.filter((app) => {
+      if (activeTab === "all") return true;
+      const expectedStatus = STATUS_MAPPING[activeTab];
+      const match = app.status === expectedStatus;
+      console.log(`Application ID ${app.id} - status: ${app.status} - matches ${expectedStatus}: ${match}`);
+      return match;
+    });
+
+    console.log("Filtered applications:", filtered);
+    return filtered;
+  }, [applications, activeTab]);
+
+  // Count applications by status
+  useEffect(() => {
+    if (applications && Array.isArray(applications)) {
+      const counts = { all: applications.length };
+      applications.forEach((app) => {
+        if (app.status) {
+          counts[app.status] = (counts[app.status] || 0) + 1;
+        }
+      });
+      setStatusCounts(counts);
+      console.log("Status counts:", counts);
+    }
+  }, [applications]);
+
+  // Get internship details
+  const getInternshipDetails = (internshipId) => {
+    return internships?.find((internship) => internship.id === internshipId);
+  };
+
+  // Format date
+  const formatDate = (dateString) => {
+    if (!dateString) return "Date inconnue";
+    const date = new Date(dateString);
+    return date.toLocaleDateString("fr-FR", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  };
+
+  // Handle share documents dialog
+  const handleOpenShareDocsDialog = (applicationId, companyId, companyName) => {
+    setSelectedApplication({ id: applicationId, companyId, companyName });
+    setShareDocsOpen(true);
+  };
+
+  const handleCloseShareDocsDialog = () => {
+    setShareDocsOpen(false);
+    setTimeout(() => setSelectedApplication(null), 300);
+  };
+
+  return (
+    <DashboardLayout title="Mes candidatures">
+      <div className="mb-6">
+        <h2 className="text-lg font-medium mb-4">Filtrer par statut</h2>
+        <div className="flex flex-wrap gap-2">
+          {Object.keys(STATUS_MAPPING).map((status) => (
+            <button
+              key={status}
+              className={`px-3 py-1 text-sm rounded-md ${
+                activeTab === status ? "bg-blue-600 text-white" : "border hover:bg-gray-50"
+              }`}
+              onClick={() => handleTabChange(status)}
+            >
+              {getStatusDisplay(status)} {statusCounts[status] ? `(${statusCounts[status]})` : ""}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="space-y-4">
+          {Array(3)
+            .fill(0)
+            .map((_, index) => (
+              <Skeleton key={index} className="w-full h-40 rounded-lg" />
+            ))}
+        </div>
+      ) : applicationsError || internshipsError ? (
+        <div className="text-center py-12">
+          <p className="text-red-600">Erreur lors du chargement des données. Veuillez réessayer.</p>
+          <Button
+            onClick={() => {
+              queryClient.invalidateQueries(["applications"]);
+              queryClient.invalidateQueries(["internships"]);
+            }}
+            className="mt-4"
+          >
+            Réessayer
+          </Button>
+        </div>
+      ) : filteredApplications.length > 0 ? (
+        <div className="space-y-4">
+          {filteredApplications.map((application) => {
+            const internship = getInternshipDetails(application.internshipId);
+            if (!internship) {
+              console.log(`No internship found for application ID ${application.id}`);
+              return null;
+            }
+
+            return (
+              <Card key={application.id} className="overflow-hidden">
+                <CardContent className="p-0">
+                  <div className="p-6">
+                    <div className="flex flex-col sm:flex-row justify-between items-start mb-4">
+                      <div>
+                        <h3 className="text-lg font-medium text-gray-900">{internship.title}</h3>
+                        <div className="flex items-center mt-1 text-gray-500 text-sm">
+                          <Building className="h-4 w-4 mr-1" />
+                          <span className="mr-4">{internship.companyName || "Entreprise"}</span>
+                          <MapPin className="h-4 w-4 mr-1" />
+                          <span>{internship.location}</span>
+                        </div>
+                      </div>
+                      <div className="mt-2 sm:mt-0">
+                        <ApplicationStatusBadge status={application.status} />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                      <div className="flex items-center text-sm text-gray-500">
+                        <Calendar className="h-4 w-4 mr-2 text-gray-400" />
+                        <span>Postulé le {formatDate(application.createdAt)}</span>
+                      </div>
+                      <div className="flex items-center text-sm text-gray-500">
+                        <Clock className="h-4 w-4 mr-2 text-gray-400" />
+                        <span>Durée: {internship.duration}</span>
+                      </div>
+                      <div className="flex items-center text-sm text-gray-500">
+                        <FileText className="h-4 w-4 mr-2 text-gray-400" />
+                        <span>Documents soumis: CV, LM</span>
+                      </div>
+                    </div>
+
+                    {application.status === "accepted" && (
+                      <div className="mt-4 p-3 bg-green-50 rounded-md text-green-800 text-sm flex items-start">
+                        <div className="flex-shrink-0 mt-0.5">
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </div>
+                        <div className="ml-2 flex-1">
+                          <p className="mb-2">
+                            Votre candidature a été acceptée! Un responsable de l'entreprise vous contactera prochainement.
+                          </p>
+                          <Button
+                            variant="default"
+                            size="sm"
+                            className="mt-1"
+                            onClick={() =>
+                              handleOpenShareDocsDialog(
+                                application.id,
+                                internship.companyId,
+                                internship.companyName || "Entreprise"
+                              )
+                            }
+                          >
+                            <Upload className="h-4 w-4 mr-2" />
+                            Partager mes documents
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {application.status === "interviewing" && (
+                      <div className="mt-4 p-3 bg-blue-50 rounded-md text-blue-800 text-sm flex items-start">
+                        <div className="flex-shrink-0 mt-0.5">
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586l-1.707 1.707a1 1 0 001.414 1.414l2-2a1 1 0 00.293-.707V7z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </div>
+                        <p className="ml-2">
+                          Vous avez un entretien prévu. Consultez vos emails pour plus de détails.
+                        </p>
+                      </div>
+                    )}
+
+                    {application.status === "rejected" && (
+                      <div className="mt-4 p-3 bg-red-50 rounded-md text-red-800 text-sm flex items-start">
+                        <div className="flex-shrink-0 mt-0.5">
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </div>
+                        <p className="ml-2">
+                          Votre candidature n'a pas été retenue pour ce poste. Continuez à postuler à d'autres offres.
+                        </p>
+                      </div>
+                    )}
+
+                    {application.status === "reviewing" && (
+                      <div className="mt-4 p-3 bg-blue-50 rounded-md text-blue-800 text-sm flex items-start">
+                        <div className="flex-shrink-0 mt-0.5">
+                          <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586l-1.707 1.707a1 1 0 001.414 1.414l2-2a1 1 0 00.293-.707V7z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        </div>
+                        <p className="ml-2">
+                          Votre candidature est en cours de révision par l'entreprise.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <Separator />
+
+                  <div className="px-6 py-3 bg-gray-50 flex justify-end space-x-3">
+                    <Button variant="outline" size="sm">
+                      <FileText className="h-4 w-4 mr-2" />
+                      Lettre de motivation
+                    </Button>
+                    <Button variant="outline" size="sm">
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      Voir l'offre
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="flex flex-col items-center justify-center py-12 text-center">
+          <ClipboardList className="h-12 w-12 text-gray-400 mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Aucune candidature trouvée</h3>
+          <p className="text-gray-500 max-w-md mb-4">
+            {activeTab === "all"
+              ? "Vous n'avez pas encore postulé à des offres de stage."
+              : `Vous n'avez pas de candidatures ${getStatusDisplay(activeTab).toLowerCase()}.`}
+          </p>
+          <Button onClick={() => (window.location.href = "/student/internships")}>
+            Voir les offres de stage
+          </Button>
+        </div>
+      )}
+
+      {selectedApplication && (
+        <ShareDocumentsDialog
+          isOpen={shareDocsOpen}
+          onClose={handleCloseShareDocsDialog}
+          applicationId={selectedApplication.id}
+          companyId={selectedApplication.companyId}
+          companyName={selectedApplication.companyName}
+        />
+      )}
+    </DashboardLayout>
+  );
+}
